@@ -51,7 +51,7 @@ class WordPressCookieAuthenticator(Component):
             return None
 
         pass_frag = user_pass[8:12]
-        key = self.wp_hash(username + pass_frag + '|' + expiration + '|' + token, 'auth')
+        key = self.wp_hash(username + '|' + pass_frag + '|' + expiration + '|' + token, 'auth')
         valid_mac = hmac.new(key, username + '|' + expiration + '|' + token, hashlib.sha256).hexdigest()
         if valid_mac != mac:
             return None
