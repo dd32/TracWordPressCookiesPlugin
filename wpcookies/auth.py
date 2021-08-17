@@ -39,10 +39,10 @@ class WordPressCookieAuthenticator(Component):
 
         cookie = unquote_plus(req.incookie[cookie_name].value)
         elements = cookie.split('|')
-        if len(elements) != 3:
+        if len(elements) != 4:
             return None
 
-        username, expiration, mac = elements
+        username, expiration, token, mac = elements
         if int(expiration) < time.time():
             return None
 
@@ -51,8 +51,8 @@ class WordPressCookieAuthenticator(Component):
             return None
 
         pass_frag = user_pass[8:12]
-        key = self.wp_hash(username + pass_frag + '|' + expiration, 'auth')
-        valid_mac = hmac.new(key, username + '|' + expiration, hashlib.md5).hexdigest()
+        key = self.wp_hash(username + pass_frag + '|' + expiration + '|' + token, 'auth')
+        valid_mac = hmac.new(key, username + '|' + expiration + '|' + token, hashlib.sha256).hexdigest()
         if valid_mac != mac:
             return None
 
