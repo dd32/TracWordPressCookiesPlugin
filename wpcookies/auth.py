@@ -132,7 +132,7 @@ class WP_User(object):
 
         Only supports arrays, strings, and integers.
 
-        Alternatively, use the pip unserialize package and replace this method:
+        Alternatively, use the pip phpserialize package and replace this method:
             pip install phpserialize
             from phpserialize import unserialize
 
