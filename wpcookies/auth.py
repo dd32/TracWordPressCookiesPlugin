@@ -13,6 +13,7 @@
 #   auth_salt = auth_saltauth_saltauth_saltauth_saltauth_saltauth_saltauth_salt
 #   db = mysql://wordpress:password@localhost/wordpress
 #   wp_users = wp_users
+#   wp_usermeta = (Will be guessed based on wp_users if not specified)
 #
 # TODO: raise exception on missing configuration
 
@@ -58,6 +59,11 @@ class WordPressCookieAuthenticator(Component):
         if valid_mac != mac:
             return None
 
+        # Verify against the user sessions.
+        session_ok = user.validate_session(token)
+        if not session_ok:
+            return None
+
         return username
 
     def wp_hash(self, data, scheme = 'auth'):
@@ -72,12 +78,15 @@ class WordPressCookieAuthenticator(Component):
     def get_wp_user(self,username):
         db = self.env.config.get('wordpress', 'db')
         table = self.env.config.get('wordpress', 'wp_users')
+        metatable = self.env.config.get('wordpress', 'wp_usermeta');
+        if not metatable:
+            metatable = table.replace( '_users', '_usermeta', 1 )
 
         r = urlparse(db)
         conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
         cursor = conn.cursor()
-        cursor.execute("SELECT user_login, user_pass, user_email FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
+        cursor.execute("SELECT user_login, user_pass, user_email, meta_value FROM " + conn.quote(table) + " u LEFT JOIN " + conn.quote(metatable) + " um ON u.ID = um.user_id AND um.meta_key = 'session_tokens' WHERE user_login = %s", [username])
         user = cursor.fetchone()
         cursor.close()
         conn.close()
@@ -91,10 +100,72 @@ class WordPressCookieAuthenticator(Component):
 
 class WP_User(object):
     def __init__(self,user):
-        self.username, self.user_pass, self.user_email = user
+        self.username, self.user_pass, self.user_email, sessions_raw = user
+
+        try:
+            self.sessions = self.unserialize( sessions_raw )[0]
+        except:
+            # Ignore the error, just don't process the sessions.
+            self.sessions = {}
 
     def sync_email(self,env):
         trac_session = DetachedSession(env, self.username)
         trac_session.set('email', self.user_email)
         trac_session.save()
 
+    def validate_session(self, token):
+        '''
+            Validate a session is valid.
+        '''
+        hash = hashlib.sha256(token).hexdigest()
+        if not hash in self.sessions:
+            return None
+
+        # Check the session hasn't expired.
+        if int(self.sessions[ hash ]['expiration']) < time.time():
+            return None
+
+        return True
+
+    def unserialize(self, s):
+        ''' Unserialize a single value from the head of a serialized string.
+
+        Only supports arrays, strings, and integers.
+
+        Alternatively, use the pip unserialize package and replace this method:
+            pip install phpserialize
+            from phpserialize import unserialize
+
+        Returns value, tail
+        '''
+        if s.startswith('i:'):
+            value, s = s[2:].split(';', 1)
+            return int(value), s
+        elif s.startswith('s:'):
+            s = s[2:]
+            length, s = s.split(':', 1)
+            length = int(length)
+            if length > len(s) - 3:
+                raise ValueError('String length %d is too long for serialized data, length %d.' % (l, len(s)))
+            elif s[0] != '"':
+                raise ValueError('Missing opening quote after string, found %r.' % (s[0],))
+            elif s[length+1:length+3] != '";':
+                raise ValueError('Missing closing quote and semi-colon after string, found %r.' % (s[length+1:length+3],))
+            return s[1:length+1], s[length+3:]
+        elif s.startswith('a:'):
+            s = s[2:]
+            length, s = s.split(':', 1)
+            length = int(length)
+            if s[0] != '{':
+                raise ValueError('Missing opening curly brace before array contents, found %r.' % (s[i+2],))
+            s = s[1:]
+            array = dict()
+            for i in xrange(0, length):
+                key, s = self.unserialize(s)
+                value, s = self.unserialize(s)
+                array[key] = value
+            if s[0:1] != '}':
+                raise ValueError('Missing closing curly brace and semicolon after array contents, found %r.' % (s[0:2],))
+            return array, s[1:]
+        else:
+            raise ValueError('Cannot unserialize %r.' % (s,))
