@@ -15,7 +15,6 @@
 #   wp_users = wp_users
 #
 # TODO: raise exception on missing configuration
-# TODO: cache _get_user_pass (but not across requests)
 
 from trac.core import *
 from trac.db.mysql_backend import MySQLConnection
@@ -46,11 +45,14 @@ class WordPressCookieAuthenticator(Component):
         if int(expiration) < time.time():
             return None
 
-        user_pass = self.get_user_pass(username)
-        if not user_pass:
+        # Sanitize username with strict whitelist from sanitize_user()
+        username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
+
+        user = self.get_wp_user(username)
+        if not user:
             return None
 
-        pass_frag = user_pass[8:12]
+        pass_frag = user.user_pass[8:12]
         key = self.wp_hash(username + '|' + pass_frag + '|' + expiration + '|' + token, 'auth')
         valid_mac = hmac.new(key, username + '|' + expiration + '|' + token, hashlib.sha256).hexdigest()
         if valid_mac != mac:
@@ -67,13 +69,7 @@ class WordPressCookieAuthenticator(Component):
         salt = self.env.config.get('wordpress', scheme + '_salt')
         return key + salt
 
-    def get_user_pass(self, username):
-        # Sanitize username with strict whitelist from sanitize_user()
-        username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
-
-        return self._get_user_pass(username)
-
-    def _get_user_pass(self, username):
+    def get_wp_user(self,username):
         db = self.env.config.get('wordpress', 'db')
         table = self.env.config.get('wordpress', 'wp_users')
 
@@ -81,15 +77,24 @@ class WordPressCookieAuthenticator(Component):
         conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
         cursor = conn.cursor()
-        cursor.execute("SELECT user_pass, user_email FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
+        cursor.execute("SELECT user_login, user_pass, user_email FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
         user = cursor.fetchone()
         cursor.close()
         conn.close()
+
         if user:
-            user_pass, user_email = user
+            user = WP_User( user )
             # Synchronize the user's email address while we have the chance.
-            session = DetachedSession(self.env, username)
-            session.set('email', user_email)
-            session.save()
-            return user_pass
-        return user
+            user.sync_email( self.env )
+
+        return user;
+
+class WP_User(object):
+    def __init__(self,user):
+        self.username, self.user_pass, self.user_email = user
+
+    def sync_email(self,env):
+        trac_session = DetachedSession(env, self.username)
+        trac_session.set('email', self.user_email)
+        trac_session.save()
+
