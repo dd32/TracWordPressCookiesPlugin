@@ -13,7 +13,9 @@
 #   auth_salt = (3kfwOE-i)Oaq8q7@HTwdZ1Hi{F{=*s+O>ZCbsyMT+,^s<7XZq;T{|g{twM^6XlR
 #   db = mysql://wordpress:cbi2jMEVDYWynaJ@localhost/wordpress
 #   wp_users = wp_users
+#   wp_user_sessions = wp_user_sessions
 #
+# NOTE: For wp_user_sessions, See https://github.com/WordPress/wporg-mu-plugins/pull/345
 # TODO: raise exception on missing configuration
 # TODO: cache _get_user_pass (but not across requests)
 
@@ -39,20 +41,24 @@ class WordPressCookieAuthenticator(Component):
 
         cookie = unquote_plus(req.incookie[cookie_name].value)
         elements = cookie.split('|')
-        if len(elements) != 3:
+        if len(elements) != 4:
             return None
 
-        username, expiration, mac = elements
+        username, expiration, token, mac = elements
         if int(expiration) < time.time():
             return None
 
-        user_pass = self.get_user_pass(username)
+        user_pass, user_email, session_expiration = self.get_user_pass(username,token)
         if not user_pass:
             return None
 
+        # Validate that the user session is still valid
+        if int(session_expiration) < time.time():
+            return None
+
         pass_frag = user_pass[8:12]
-        key = self.wp_hash(username + pass_frag + '|' + expiration, 'auth')
-        valid_mac = hmac.new(key, username + '|' + expiration, hashlib.md5).hexdigest()
+        key = self.wp_hash(username + '|' + pass_frag + '|' + expiration + '|' + token, 'auth')
+        valid_mac = hmac.new(key, username + '|' + expiration + '|' + token, hashlib.sha256).hexdigest()
         if valid_mac != mac:
             return None
 
@@ -67,21 +73,25 @@ class WordPressCookieAuthenticator(Component):
         salt = self.env.config.get('wordpress', scheme + '_salt')
         return key + salt
 
-    def get_user_pass(self, username):
+    def get_user_pass(self, username, token):
         # Sanitize username with strict whitelist from sanitize_user()
         username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
 
-        return self._get_user_pass(username)
+        # Generate the token verifier
+        verifier = hashlib.sha256(token).hexdigest()
 
-    def _get_user_pass(self, username):
+        return self._get_user_pass(username,verifier)
+
+    def _get_user_pass(self, username, verifier):
         db = self.env.config.get('wordpress', 'db')
         table = self.env.config.get('wordpress', 'wp_users')
+        session_table = self.env.config.get('wordpress', 'wp_user_sessions')
 
         r = urlparse(db)
         conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
         cursor = conn.cursor()
-        cursor.execute("SELECT user_pass, user_email FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
+        cursor.execute("SELECT user_pass, user_email, s.expiration as session_expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s LIMIT 1", [username, verifier])
         user = cursor.fetchone()
         cursor.close()
         conn.close()
