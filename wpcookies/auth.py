@@ -48,9 +48,11 @@ class WordPressCookieAuthenticator(Component):
         if int(expiration) < time.time():
             return None
 
-        user_pass, session_expiration = self.get_session_details(username,token)
-        if not user_pass:
+        session_details = self.get_session_details(username,token)
+        if not session_details:
             return None
+
+        user_pass, session_expiration = session_details
 
         # Validate that the user session is still valid
         if int(session_expiration) < time.time():
