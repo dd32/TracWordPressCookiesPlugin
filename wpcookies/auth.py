@@ -91,15 +91,15 @@ class WordPressCookieAuthenticator(Component):
         conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
         cursor = conn.cursor()
-        cursor.execute("SELECT user_pass, user_email, s.expiration as session_expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s LIMIT 1", [username, verifier])
+        cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s LIMIT 1", [username, verifier])
         user = cursor.fetchone()
         cursor.close()
         conn.close()
+
         if user:
-            user_pass, user_email = user
+            user_pass, user_email = user[:2]
             # Synchronize the user's email address while we have the chance.
             session = DetachedSession(self.env, username)
             session.set('email', user_email)
             session.save()
-            return user_pass
         return user
