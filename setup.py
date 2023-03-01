@@ -2,9 +2,9 @@ from setuptools import find_packages, setup
 
 setup(
     name = 'WordPressCookies',
-    version = '0.1',
+    version = '0.2',
     author = 'Jon Cave',
-    description = 'Authentication plugin to read WordPress auth cookies',
+    description = 'Authentication plugin to read WordPress auth cookies. Only supports WordPress Sessions with the wp_user_sessions table.',
     license = 'GPLv2+',
 
     packages = find_packages(exclude=['*.tests*']),
