@@ -48,15 +48,16 @@ class WordPressCookieAuthenticator(Component):
 
         return None;
 
-    def authenicate_oldauth(self, req, elements):
+    def authenticate_oldauth(self, req, elements):
         username, expiration, mac = elements
         if int(expiration) < time.time():
             return None
 
-        user_pass = self.get_user_pass(username)
-        if not user_pass:
+        session_details = self.get_session_details(username)
+        if not session_details:
             return None
 
+        user_pass = session_details[0]
         pass_frag = user_pass[8:12]
         key = self.wp_hash(username + pass_frag + '|' + expiration, 'auth')
         valid_mac = hmac.new(key, username + '|' + expiration, hashlib.md5).hexdigest()
@@ -97,7 +98,7 @@ class WordPressCookieAuthenticator(Component):
         salt = self.env.config.get('wordpress', scheme + '_salt')
         return key + salt
 
-    def get_session_details(self, username, token):
+    def get_session_details(self, username, token = ''):
         # Sanitize username with strict whitelist from sanitize_user()
         username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
 
