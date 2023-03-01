@@ -41,9 +41,31 @@ class WordPressCookieAuthenticator(Component):
 
         cookie = unquote_plus(req.incookie[cookie_name].value)
         elements = cookie.split('|')
-        if len(elements) != 4:
+        if len(elements) == 4:
+            return self.authenticate_with_session(req, elements)
+        elif len(elements) == 3:
+            return self.authenticate_oldauth(req, elements)
+
+        return None;
+
+    def authenicate_oldauth(self, req, elements):
+        username, expiration, mac = elements
+        if int(expiration) < time.time():
             return None
 
+        user_pass = self.get_user_pass(username)
+        if not user_pass:
+            return None
+
+        pass_frag = user_pass[8:12]
+        key = self.wp_hash(username + pass_frag + '|' + expiration, 'auth')
+        valid_mac = hmac.new(key, username + '|' + expiration, hashlib.md5).hexdigest()
+        if valid_mac != mac:
+            return None
+
+        return username
+
+    def authenticate_with_session(self, req, elements):
         username, expiration, token, mac = elements
         if int(expiration) < time.time():
             return None
@@ -80,7 +102,7 @@ class WordPressCookieAuthenticator(Component):
         username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
 
         # Generate the token verifier
-        verifier = hashlib.sha256(token).hexdigest()
+        verifier = hashlib.sha256(token).hexdigest() if token else ''
 
         return self._get_session_details(username,verifier)
 
@@ -93,7 +115,10 @@ class WordPressCookieAuthenticator(Component):
         conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
         cursor = conn.cursor()
-        cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s", [username, verifier])
+        if verifier:
+                cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s", [username, verifier])
+        else:
+                cursor.execute("SELECT user_pass, user_email, 0 as expiration FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
 
         user = cursor.fetchone()
         cursor.close()
