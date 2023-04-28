@@ -112,18 +112,22 @@ class WordPressCookieAuthenticator(Component):
         table = self.env.config.get('wordpress', 'wp_users')
         session_table = self.env.config.get('wordpress', 'wp_user_sessions')
 
-        r = urlparse(db)
-        conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
+	try:
+            r = urlparse(db)
+            conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
-        cursor = conn.cursor()
-        if verifier:
-                cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s", [username, verifier])
-        else:
-                cursor.execute("SELECT user_pass, user_email, 0 as expiration FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
+            cursor = conn.cursor()
+            if verifier:
+                    cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s", [username, verifier])
+            else:
+                    cursor.execute("SELECT user_pass, user_email, 0 as expiration FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
 
-        user = cursor.fetchone()
-        cursor.close()
-        conn.close()
+            user = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            self.log.error( e )
+            user = None
 
         if user:
             user_pass, user_email, session_expiry = user
