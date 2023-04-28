@@ -13,9 +13,11 @@
 #   auth_salt = auth_saltauth_saltauth_saltauth_saltauth_saltauth_saltauth_salt
 #   db = mysql://wordpress:password@localhost/wordpress
 #   wp_users = wp_users
+#   wp_user_sessions = wp_user_sessions
 #
+# NOTE: For wp_user_sessions, See https://github.com/WordPress/wporg-mu-plugins/pull/345
 # TODO: raise exception on missing configuration
-# TODO: cache _get_user_pass (but not across requests)
+# TODO: cache _get_session_details (but not across requests)
 
 from trac.core import *
 from trac.db.mysql_backend import MySQLConnection
@@ -39,20 +41,49 @@ class WordPressCookieAuthenticator(Component):
 
         cookie = unquote_plus(req.incookie[cookie_name].value)
         elements = cookie.split('|')
-        if len(elements) != 3:
-            return None
+        if len(elements) == 4:
+            return self.authenticate_with_session(req, elements)
+        elif len(elements) == 3:
+            return self.authenticate_oldauth(req, elements)
 
+        return None;
+
+    def authenticate_oldauth(self, req, elements):
         username, expiration, mac = elements
         if int(expiration) < time.time():
             return None
 
-        user_pass = self.get_user_pass(username)
-        if not user_pass:
+        session_details = self.get_session_details(username)
+        if not session_details:
             return None
 
+        user_pass = session_details[0]
         pass_frag = user_pass[8:12]
         key = self.wp_hash(username + pass_frag + '|' + expiration, 'auth')
         valid_mac = hmac.new(key, username + '|' + expiration, hashlib.md5).hexdigest()
+        if valid_mac != mac:
+            return None
+
+        return username
+
+    def authenticate_with_session(self, req, elements):
+        username, expiration, token, mac = elements
+        if int(expiration) < time.time():
+            return None
+
+        session_details = self.get_session_details(username,token)
+        if not session_details:
+            return None
+
+        user_pass, session_expiration = session_details
+
+        # Validate that the user session is still valid
+        if int(session_expiration) < time.time():
+            return None
+
+        pass_frag = user_pass[8:12]
+        key = self.wp_hash(username + '|' + pass_frag + '|' + expiration + '|' + token, 'auth')
+        valid_mac = hmac.new(key, username + '|' + expiration + '|' + token, hashlib.sha256).hexdigest()
         if valid_mac != mac:
             return None
 
@@ -67,29 +98,42 @@ class WordPressCookieAuthenticator(Component):
         salt = self.env.config.get('wordpress', scheme + '_salt')
         return key + salt
 
-    def get_user_pass(self, username):
+    def get_session_details(self, username, token = ''):
         # Sanitize username with strict whitelist from sanitize_user()
         username = re.sub('[^a-zA-Z0-9 _.@-]', '', username)
 
-        return self._get_user_pass(username)
+        # Generate the token verifier
+        verifier = hashlib.sha256(token).hexdigest() if token else ''
 
-    def _get_user_pass(self, username):
+        return self._get_session_details(username,verifier)
+
+    def _get_session_details(self, username, verifier):
         db = self.env.config.get('wordpress', 'db')
         table = self.env.config.get('wordpress', 'wp_users')
+        session_table = self.env.config.get('wordpress', 'wp_user_sessions')
 
-        r = urlparse(db)
-        conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
+	try:
+            r = urlparse(db)
+            conn = MySQLConnection(r.path, self.log, user=r.username, password=r.password, host=r.hostname)
 
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_pass, user_email FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
-        user = cursor.fetchone()
-        cursor.close()
-        conn.close()
+            cursor = conn.cursor()
+            if verifier:
+                    cursor.execute("SELECT user_pass, user_email, s.expiration FROM " + conn.quote(table) + " u JOIN " + conn.quote(session_table) + " s ON s.user_id = u.ID WHERE u.user_login = %s AND s.verifier = %s", [username, verifier])
+            else:
+                    cursor.execute("SELECT user_pass, user_email, 0 as expiration FROM " + conn.quote(table) + " WHERE user_login = %s", [username])
+
+            user = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            self.log.error( e )
+            user = None
+
         if user:
-            user_pass, user_email = user
+            user_pass, user_email, session_expiry = user
             # Synchronize the user's email address while we have the chance.
             session = DetachedSession(self.env, username)
             session.set('email', user_email)
             session.save()
-            return user_pass
+            return user_pass, session_expiry
         return user
